@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\Api\V1\CountryController;
+use App\Http\Controllers\Api\V1\CountryLanguageController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -10,3 +12,8 @@ Route::get('/', function (Request $request) {
 Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:api');
+
+Route::prefix('v1')->group(function () {
+    Route::apiResource('countries', CountryController::class);
+    Route::apiResource('country-languages', CountryLanguageController::class);
+});
