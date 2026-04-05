@@ -21,7 +21,8 @@ cd <this-repo>
 composer install
 cp .env.example .env
 php artisan key:generate
-php artisan migrate
+php artisan passport:keys
+php artisan migrate --seed
 php artisan test --filter=ClientCredentialsDuplicateQueryTest
 ```
 
