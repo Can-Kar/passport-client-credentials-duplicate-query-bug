@@ -24,7 +24,7 @@ class CountryResource extends JsonResource
             'updated_at' => $this->updated_at,
         ];
 
-        if (Auth::check() && Auth::user()?->is_admin) {
+        if (Auth::user()?->is_admin) {
             $result['status'] = $this->status;
         }
 
