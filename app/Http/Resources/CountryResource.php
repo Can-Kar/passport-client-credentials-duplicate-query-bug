@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\Auth;
 
 class CountryResource extends JsonResource
 {
@@ -14,14 +15,19 @@ class CountryResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        return [
+        $result = [
             'id' => $this->id,
-            'status' => $this->status,
             'iso2_code' => $this->iso2_code,
             'phone_code' => $this->phone_code,
             'country_languages' => CountryLanguageResource::collection($this->whenLoaded('countryLanguages')),
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];
+
+        if (Auth::check() && Auth::user()?->is_admin) {
+            $result['status'] = $this->status;
+        }
+
+        return $result;
     }
 }

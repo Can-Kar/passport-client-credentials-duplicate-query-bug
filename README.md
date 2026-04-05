@@ -1,58 +1,83 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Passport `TokenGuard::user()` Duplicate Query Bug Reproduction
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Minimal Laravel project demonstrating a bug in [laravel/passport](https://github.com/laravel/passport) where `TokenGuard::user()` re-enters the full OAuth2 validation pipeline on every call for `client_credentials` tokens, causing N duplicate `oauth_access_tokens` queries per request.
 
-## About Laravel
+## The Bug
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+`TokenGuard::user()` uses `is_null($this->user)` to cache the resolved user. For `client_credentials` tokens, `authenticateViaBearerToken()` legitimately returns `null` (no user). The guard cannot distinguish "never resolved" from "resolved to null", so every subsequent `Auth::check()` or `Auth::user()` call re-triggers the full token validation.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+```php
+// TokenGuard::user()
+if (! is_null($this->user)) {  // ← always true when user is null
+    return $this->user;
+}
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+## Reproduction
 
-## Contributing
+```bash
+git clone <this-repo>
+cd <this-repo>
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan test --filter=ClientCredentialsDuplicateQueryTest
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+### Expected
 
-## Code of Conduct
+≤2 `oauth_access_tokens` queries regardless of collection size.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+### Actual
 
-## Security Vulnerabilities
+15 identical `oauth_access_tokens` queries for a collection of 15 items:
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```sql
+select exists(
+    select * from "oauth_access_tokens"
+    where "oauth_access_tokens"."id" = ? and "revoked" = 0
+) as "exists"
+```
 
-## License
+## How It Works
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+1. A `client_credentials` OAuth client is created (no user provider)
+2. A real token is issued via `/oauth/token`
+3. `CountryResource::toArray()` calls `Auth::check()` to conditionally show admin-only fields
+4. Each `Auth::check()` re-enters `TokenGuard::user()` → `authenticateViaBearerToken()` → `getPsrRequestViaBearerToken()` → `BearerTokenValidator` → `isAccessTokenRevoked()` — one duplicate query per resource item
+
+## Suggested Fix
+
+Use a sentinel boolean to track whether user resolution has been attempted:
+
+```php
+protected bool $userResolved = false;
+
+public function user(): ?Authenticatable
+{
+    if ($this->userResolved) {
+        return $this->user;
+    }
+
+    $this->userResolved = true;
+
+    if ($this->request->bearerToken()) {
+        return $this->user = $this->authenticateViaBearerToken();
+    }
+
+    if ($this->request->cookie(Passport::cookie())) {
+        return $this->user = $this->authenticateViaCookie();
+    }
+
+    return null;
+}
+```
+
+> **Note:** The `client()` method has the same pattern at [TokenGuard.php:98-101](https://github.com/laravel/passport/blob/13.x/src/Guards/TokenGuard.php#L98-L101) and may benefit from the same fix.
+
+## Environment
+
+- PHP 8.5
+- Laravel 13.x
+- Passport 13.x
