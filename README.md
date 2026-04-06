@@ -50,28 +50,26 @@ select exists(
 
 ## Suggested Fix
 
-Use a sentinel boolean to track whether user resolution has been attempted:
+Memoize the validated PSR request in `getPsrRequestViaBearerToken()` to avoid redundant `BearerTokenValidator` calls:
 
 ```php
-protected bool $userResolved = false;
+protected ?ServerRequestInterface $validatedPsrRequest = null;
 
-public function user(): ?Authenticatable
+protected function getPsrRequestViaBearerToken(): ?ServerRequestInterface
 {
-    if ($this->userResolved) {
-        return $this->user;
+    if ($this->validatedPsrRequest !== null) {
+        return $this->validatedPsrRequest;
     }
 
-    $this->userResolved = true;
+    $psr = (new PsrHttpFactory)->createRequest($this->request);
 
-    if ($this->request->bearerToken()) {
-        return $this->user = $this->authenticateViaBearerToken();
+    try {
+        return $this->validatedPsrRequest = $this->server->validateAuthenticatedRequest($psr);
+    } catch (OAuthServerException $e) {
+        $this->request->headers->set('Authorization', '', true);
+        report($e);
+        return null;
     }
-
-    if ($this->request->cookie(Passport::cookie())) {
-        return $this->user = $this->authenticateViaCookie();
-    }
-
-    return null;
 }
 ```
 
